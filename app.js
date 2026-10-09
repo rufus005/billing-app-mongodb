@@ -1,4 +1,7 @@
 import express from "express";
+import dotenv from "dotenv";
+import { fileURLToPath } from "node:url";
+import { connectDB } from "./config/db.js";
 import cors from "cors";
 import jwt from "jsonwebtoken";
 import { timingSafeEqual, createHash, randomUUID } from "node:crypto";
@@ -9,6 +12,12 @@ import { updateCompletedSale } from "./utils/stock.js";
 import { validateProducts } from "./utils/products.js";
 import { calculate, round } from "./utils/calculations.js";
 import { defaultSettings } from "./utils/invoiceTypes.js";
+dotenv.config({
+  path: [
+    fileURLToPath(new URL("./.env", import.meta.url)),
+    fileURLToPath(new URL("../.env", import.meta.url)),
+  ],
+});
 const fail = (message, status = 400) =>
   Object.assign(new Error(message), { status });
 const clean = (d) => (d ? JSON.parse(JSON.stringify(d)) : null);
@@ -67,6 +76,9 @@ export function createApp() {
     req.body ??= {};
     next();
   });
+  app.get("/", (_req, res) =>
+    res.json({ name: "Billing API", server: "ok", health: "/api/health" }),
+  );
   app.get("/api/health", (_req, res) =>
     res
       .status(mongoose.connection.readyState === 1 ? 200 : 503)
@@ -388,3 +400,6 @@ export function createApp() {
   });
   return app;
 }
+
+if (await connectDB()) await initialize();
+export default createApp();
