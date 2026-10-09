@@ -5,7 +5,10 @@ import { connectDB } from "./config/db.js";
 import { createApp, initialize } from "./app.js";
 
 dotenv.config({
-  path: fileURLToPath(new URL("../.env", import.meta.url)),
+  path: [
+    fileURLToPath(new URL("./.env", import.meta.url)),
+    fileURLToPath(new URL("../.env", import.meta.url)),
+  ],
 });
 
 if (await connectDB()) await initialize();
