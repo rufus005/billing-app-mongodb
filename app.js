@@ -56,7 +56,7 @@ export function createApp() {
   const app = express();
   const configuredOrigins = (process.env.CLIENT_URL || "http://localhost:5173,http://localhost:5174")
     .split(",")
-    .map((origin) => origin.trim())
+    .map((origin) => origin.trim().replace(/\/+$/, ""))
     .filter(Boolean);
 
   app.use(
@@ -66,9 +66,12 @@ export function createApp() {
           callback(null, true);
           return;
         }
-        callback(new Error("Not allowed by CORS"));
+        callback(fail("Not allowed by CORS", 403));
       },
       credentials: true,
+      // Application-level cors handles OPTIONS before JSON parsing and auth.
+      methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      optionsSuccessStatus: 204,
     }),
   );
   app.use(express.json({ limit: "10mb" }));
