@@ -79,6 +79,20 @@ const priceSchema = new Schema(
 );
 priceSchema.index({ buyer: 1, product: 1, variant: 1 }, { unique: true });
 export const BuyerPrice = mongoose.model("BuyerPrice", priceSchema);
+export const BusinessPayment = mongoose.model(
+  "BusinessPayment",
+  new Schema(
+    {
+      _id: { type: String, default: "business" },
+      upiId: text,
+      payeeName: { type: String, default: "", maxlength: 100 },
+      showQrOnInvoices: { type: Boolean, default: true },
+      qrFileId: Schema.Types.ObjectId,
+      qrContentType: text,
+    },
+    { versionKey: false },
+  ),
+);
 const buyer = new Schema(
   { name: text, mobile: text, address: text, gstin: text },
   { _id: false },

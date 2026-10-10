@@ -66,3 +66,19 @@ Live checks passed: OPTIONS 204 for all three origins, invalid login 401 with
 CORS headers, and health 200 with MongoDB connected. Existing secrets were
 unchanged. The local CORS hardening and tests are additional changes to commit
 and deploy; the production configuration fix is already active.
+
+## Business payment settings
+
+Authenticated `GET /api/business-payment` and `PUT /api/business-payment` share
+`{ upiId, payeeName, showQrOnInvoices, qrCode }`. Updates preserve omitted fields;
+an empty UPI ID or payee name clears it. `showQrOnInvoices` defaults to true for
+existing businesses. Send `qrCode` as a PNG, JPEG or WebP base64 data URL (maximum
+3 MB decoded), or `removeQrCode: true` to remove the image. Omitted/empty `qrCode`
+keeps the current image. Upload and removal cannot be requested together.
+Images are stored in MongoDB GridFS; replacement cleans up the previous file.
+No database reset or manual migration is required.
+
+The frontend Business Settings form saves these values. Invoice preview and PDF
+use saved settings; hiding a QR retains its image for later use. The payee name
+is printed alongside the UPI ID. Uploaded QR contents are not regenerated when
+the UPI ID changes; replace the image too if its payment destination changes.
