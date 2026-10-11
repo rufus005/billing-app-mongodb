@@ -1,5 +1,5 @@
 import express from "express";
-import { validatePaymentUpdate, paymentResponse } from "./utils/businessPayment.js";
+import { getPaymentSettings, savePaymentSettings } from "./utils/paymentStorage.js";
 import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 import { connectDB } from "./config/db.js";
@@ -134,66 +134,28 @@ export function createApp() {
             message: "MongoDB unavailable. Your local data has been preserved.",
           }),
   );
-  app.get("/api/business-payment", async (_req, res) => {
-    const profile = await BusinessPayment.findById("business");
-    let qrCode = "";
-    if (profile?.qrFileId) {
-      const chunks = [];
-      await new Promise((resolve, reject) => {
-        const stream = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
-          bucketName: "businessQr",
-        }).openDownloadStream(profile.qrFileId);
-        stream.on("data", (chunk) => chunks.push(chunk));
-        stream.on("error", reject);
-        stream.on("end", resolve);
-      });
-      qrCode = `data:${profile.qrContentType};base64,${Buffer.concat(chunks).toString("base64")}`;
-    }
-    res.json(paymentResponse(profile, qrCode));
+  const paymentRouter = express.Router();
+  paymentRouter.use((_req, res, next) => {
+    res.set("Cache-Control", "private, no-store");
+    next();
   });
-  app.put("/api/business-payment", async (req, res) => {
-    const { fields, image, removeQrCode } = validatePaymentUpdate(req.body);
-    const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
-      bucketName: "businessQr",
+  paymentRouter.get("/", async (_req, res) => res.json(await getPaymentSettings()));
+  for (const method of ["post", "put"])
+    paymentRouter[method]("/", async (req, res) => res.json(await savePaymentSettings(req.body)));
+  paymentRouter.use((error, req, res, _next) => {
+    if (error.status === 400 || error.name === "ValidationError")
+      return res.status(400).json({ message: error.status === 400 ? error.message : "Invalid payment settings." });
+    const unavailable = /Mongo(Network|ServerSelection|TopologyClosed)|MongooseServerSelection/.test(error.name);
+    console.error("Business payment request failed", {
+      method: req.method, name: error.name, code: error.code,
     });
-    let uploadedId;
-    if (removeQrCode) Object.assign(fields, { qrFileId: null, qrContentType: "" });
-    if (image) {
-      const upload = bucket.openUploadStream("business-qr", { contentType: image.contentType });
-      await new Promise((resolve, reject) => {
-        upload.on("error", reject);
-        upload.on("finish", resolve);
-        upload.end(image.buffer);
-      });
-      uploadedId = upload.id;
-      Object.assign(fields, { qrFileId: uploadedId, qrContentType: image.contentType });
-    }
-    let previous;
-    try {
-      // Return the prior document so concurrent replacements clean up the right file.
-      previous = await BusinessPayment.findByIdAndUpdate(
-        "business",
-        { $set: fields },
-        { upsert: true, new: false, setDefaultsOnInsert: true, runValidators: true },
-      );
-    } catch (error) {
-      if (uploadedId) await bucket.delete(uploadedId).catch(() => {});
-      throw error;
-    }
-    if ((image || removeQrCode) && previous?.qrFileId)
-      await bucket.delete(previous.qrFileId).catch(() => {});
-    const profile = { ...(previous?.toObject() || {}), ...fields };
-    let qrCode = "";
-    if (profile.qrFileId) {
-      if (image) qrCode = req.body.qrCode;
-      else {
-        const chunks = [];
-        for await (const chunk of bucket.openDownloadStream(profile.qrFileId)) chunks.push(chunk);
-        qrCode = `data:${profile.qrContentType};base64,${Buffer.concat(chunks).toString("base64")}`;
-      }
-    }
-    res.json(paymentResponse(profile, qrCode));
+    res.status(unavailable ? 503 : 500).json({
+      message: unavailable
+        ? "Payment storage is unavailable. Please retry shortly."
+        : "Unable to access payment settings or the QR image. Please retry or contact support.",
+    });
   });
+  app.use("/api/business-payment", paymentRouter);
   app.post("/api/import", async (req, res) => {
     const result = await transaction(async (session) => {
       if (

@@ -1,6 +1,8 @@
 const invalid = (message) => Object.assign(new Error(message), { status: 400 });
 
 export function validatePaymentUpdate(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    throw invalid("Payment settings must be a JSON object.");
   const fields = {};
   for (const key of ["upiId", "payeeName"]) {
     if (body[key] === undefined) continue;

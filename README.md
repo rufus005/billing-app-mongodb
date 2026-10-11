@@ -82,3 +82,34 @@ The frontend Business Settings form saves these values. Invoice preview and PDF
 use saved settings; hiding a QR retains its image for later use. The payee name
 is printed alongside the UPI ID. Uploaded QR contents are not regenerated when
 the UPI ID changes; replace the image too if its payment destination changes.
+
+### Payment API recovery and regression tests
+
+`POST /api/business-payment` is also supported with the same partial-update JSON
+contract as PUT. Authenticated reads and writes use `Cache-Control: private,
+no-store`. No settings record returns the four default fields without inserting
+anything. A QR reference whose GridFS file is absent returns the saved text
+settings, `qrCode: ""`, and an explicit `qrCodeWarning` asking for re-upload.
+This read does not modify or delete the record. Missing image bytes cannot be
+recovered by the API; upload the original QR image again. The frontend can display
+`qrCodeWarning` next to its upload control; existing clients can still read all
+four required fields. Database failures and corrupt/truncated images remain
+503/500 errors, not successful empty settings.
+
+`npm test` includes HTTP integration tests against a disposable local MongoDB
+instance with real GridFS. No local or production database credentials are used.
+The first test run downloads a MongoDB binary into `/tmp/billing-test-mongodb`
+and requires network access and permission to bind localhost ports. The core test
+package has no binary-download install hook, so deployment installation does not
+download MongoDB. PNG/JPEG/WebP storage is tested at exactly 3 MiB decoded
+(4 MiB base64, within Vercel's 4.5 MB function payload limit).
+
+Production investigation on 2026-10-11 reproduced login 200, health 200 with
+MongoDB connected, payment OPTIONS 204, and authenticated payment GET 400.
+A read-only database inspection found a saved `qrFileId` with empty content type,
+no corresponding `businessQr.files` entry, and no corresponding chunks. The
+GridFS read raised `MongoRuntimeError` / `ENOENT`; the old global error handler
+mapped it to the generic 400. Available runtime logs confirmed connectivity but
+did not log the swallowed exception. The provenance of the dangling reference
+could not be established from retained logs. No production records were reset
+or migrated by this fix.

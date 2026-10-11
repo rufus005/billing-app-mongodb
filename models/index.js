@@ -87,7 +87,7 @@ export const BusinessPayment = mongoose.model(
       upiId: text,
       payeeName: { type: String, default: "", maxlength: 100 },
       showQrOnInvoices: { type: Boolean, default: true },
-      qrFileId: Schema.Types.ObjectId,
+      qrFileId: { type: Schema.Types.ObjectId, default: null },
       qrContentType: text,
     },
     { versionKey: false },

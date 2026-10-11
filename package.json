@@ -18,5 +18,8 @@
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.9.5"
+  },
+  "devDependencies": {
+    "mongodb-memory-server-core": "^10.4.3"
   }
 }
