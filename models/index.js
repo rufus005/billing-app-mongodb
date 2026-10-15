@@ -126,6 +126,13 @@ export const Invoice = mongoose.model(
       number: { ...required, unique: true },
       buyerId: String,
       buyer,
+      shipTo: buyer,
+      dueDate: String,
+      taxMode: { type: String, enum: ["gst", "non-gst"] },
+      taxJurisdiction: { type: String, enum: ["intra", "inter"] },
+      // Cumulative manually confirmed receipts, never an incremental debit.
+      // No default: historical invoices with unknown receipts remain unknown.
+      receivedAmount: { type: Number, min: 0, validate: Number.isFinite },
       items: [item],
       date: required,
       time: text,

@@ -25,7 +25,7 @@ export function calculate(i) {
             (sum, r) =>
               sum +
               (round(r.qty * (r.finalPrice ?? r.price)) * (net / sale)) /
-                (1 + (r.gstPercent ?? i.gst) / 100),
+                (1 + (i.taxMode === "non-gst" ? 0 : (r.gstPercent ?? i.gst)) / 100),
             0,
           ),
         );

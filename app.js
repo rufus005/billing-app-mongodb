@@ -372,6 +372,11 @@ export function createApp() {
                   throw fail(
                     "A completed invoice needs seller details and named items with positive quantities.",
                   );
+                if (body.receivedAmount !== undefined) {
+                  if (typeof body.receivedAmount !== "number" || !Number.isFinite(body.receivedAmount) || body.receivedAmount < 0)
+                    throw fail("Received amount must be a non-negative number.");
+                  body.receivedAmount = round(body.receivedAmount);
+                }
                 body.revision = (old?.revision || 0) + 1;
                 body.totals = calculate(body);
                 await new Invoice(body).validate();
