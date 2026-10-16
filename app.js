@@ -82,6 +82,8 @@ export function createApp() {
       // Application-level cors handles OPTIONS before JSON parsing and auth.
       methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       optionsSuccessStatus: 204,
+      // Reuse successful preflights; every actual request still checks origin and JWT.
+      maxAge: 600,
     }),
   );
   app.use(express.json({ limit: "10mb" }));

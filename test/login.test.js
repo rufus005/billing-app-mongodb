@@ -21,6 +21,7 @@ test("frontend preflight succeeds before authentication", async () => {
       "Access-Control-Request-Headers": "content-type,authorization" },
   });
   assert.equal(response.status, 204);
+  assert.equal(response.headers.get("access-control-max-age"), "600");
   assert.equal(response.headers.get("access-control-allow-origin"), origin);
   assert.match(response.headers.get("access-control-allow-methods"), /POST/);
   assert.match(response.headers.get("access-control-allow-headers"), /authorization/);
