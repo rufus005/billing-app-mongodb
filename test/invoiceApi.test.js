@@ -66,3 +66,43 @@ test("confirmed receipt totals persist, edits replace totals, retries cannot dou
   const legacy = await Invoice.create({ ...newInvoice(), number: "LEGACY" });
   assert.equal((await request("/invoices")).find(i => i.id === legacy.id).receivedAmount, undefined);
 });
+
+test('party details and business profiles survive round trips without losing old fields', async () => {
+  let party = await request('/buyers','POST',{id:'party-upgrade',name:'Test Customer',mobile:'9000000000',address:'Original address',gstin:'',email:'a@example.test',notes:'Keep me',active:true,partyType:'Supplier',pan:'ABCDE1234F',openingBalance:400,openingBalanceType:'To Pay',addressParts:{area:'Street',pin:'560062',city:'Bengaluru',state:'Karnataka'},shippingAddress:'Warehouse',creditDays:30,creditLimit:50000,contactName:'Accounts',contactPhone:'123',bankName:'Test Bank',bankAccount:'123456',bankIfsc:'TEST0001234',customFields:'Region: South'},201);
+  assert.equal(party.addressParts.pin,'560062');
+  party = await request('/buyers/party-upgrade','PUT',{...party,name:'Edited Customer'});
+  assert.equal(party.notes,'Keep me'); assert.equal(party.shippingAddress,'Warehouse'); assert.equal(party.creditDays,30);
+  await request('/business-profile','PUT',{...defaultSeller,pan:'ABCDE1234F',qrMode:'dynamic',website:'https://example.test'});
+  await request('/business-profile','PUT',{city:'Bengaluru'});
+  const profile = await request('/business-profile');
+  assert.equal(profile.name,defaultSeller.name); assert.equal(profile.qrMode,'dynamic'); assert.equal(profile.city,'Bengaluru');
+});
+
+test('payment ledger is idempotent under retries, concurrent payments and invoice edits', async () => {
+  const product = {id:'ledger-product',name:'Cabinet',code:'ledger',barcode:'123456789',hsn:'9403',category:'Furniture',price:18000,stock:10,variants:[]};
+  await request('/products','POST',product,201);
+  let invoice = await request('/invoices','POST',{...newInvoice(),number:'LEDGER-18000',status:'Completed',seller:defaultSeller,receivedAmount:5000,items:[{id:'ledger-line',productId:product.id,name:'Cabinet',qty:1,price:18000,hsn:'9403'}]},201);
+  const path = `/invoices/${invoice.id}/payments`;
+  const first = {id:'pay-1',amount:3000,date:'2026-10-16',method:'UPI',reference:'UPI-001'};
+  await Promise.all([request(path,'POST',first),request(path,'POST',first)]);
+  invoice = await request(`/invoices/${invoice.id}`);
+  assert.equal(invoice.receivedAmount,8000); assert.equal(invoice.payments.length,1); assert.equal(invoice.paymentOpeningReceived,5000);
+  assert.equal((await request('/products/ledger-product')).stock,9);
+  await request(path,'POST',{...first,amount:4000},409);
+  await request(path,'POST',{...first,id:'pay-ref-duplicate'},409);
+  await request(path,'POST',{...first,id:'too-large',amount:10001,reference:''},400);
+  await request(`/invoices/${invoice.id}`,'PUT',{...invoice,receivedAmount:9000},400);
+  await request(`/invoices/${invoice.id}`,'DELETE',invoice,400);
+  invoice = await request(path,'POST',{...first,id:'pay-final',amount:10000,reference:'UPI-002'});
+  assert.equal(invoice.receivedAmount,18000); assert.equal(invoice.payments.length,2);
+  assert.equal((await request('/products/ledger-product')).stock,9);
+  const before = invoice.totals;
+  invoice = await request(`/invoices/${invoice.id}`,'PUT',{...invoice,status:'Cancelled'});
+  assert.deepEqual(invoice.totals,before); assert.equal(invoice.payments.length,2);
+  assert.equal((await request('/products/ledger-product')).stock,10);
+});
+
+test('optional exclusive pricing, discounts, charges and rounding persist', async () => {
+  const invoice = await request('/invoices','POST',{...newInvoice(),number:'EXCLUSIVE',status:'Completed',seller:defaultSeller,receivedAmount:0,pricingMode:'exclusive',autoRoundOff:true,additionalCharges:10.25,items:[{id:'e1',name:'Item',qty:2,price:100,hsn:'123',discountPercent:10,gstPercent:18}]},201);
+  assert.equal(invoice.totals.taxable,180); assert.equal(invoice.totals.tax,32.4); assert.equal(invoice.totals.grand,223); assert.equal(invoice.totals.roundOff,0.35);
+});

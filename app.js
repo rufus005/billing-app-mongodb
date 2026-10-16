@@ -14,6 +14,7 @@ import {
   Invoice,
   Lock,
   BusinessPayment,
+  BusinessProfile,
 } from "./models/index.js";
 import { auth } from "./middleware/authMiddleware.js";
 import { updateCompletedSale } from "./utils/stock.js";
@@ -134,6 +135,44 @@ export function createApp() {
             message: "MongoDB unavailable. Your local data has been preserved.",
           }),
   );
+  app.get('/api/business-profile', async (_req, res) => res.json(await BusinessProfile.findById('business')));
+  app.put('/api/business-profile', async (req, res) => {
+    const fields = {};
+    const unset = {};
+    for (const key of ['name','address','gstin','phone','email','pan','website','pin','city','state','bank','branch','account','ifsc','logo','signature','seal','qrMode']) {
+      if (req.body[key] === undefined) continue;
+      if (key === 'qrMode' && req.body[key] === null) { unset.qrMode = 1; continue; }
+      if (typeof req.body[key] !== 'string' || req.body[key].length > (['logo','signature','seal'].includes(key) ? 4000000 : 2000)) throw fail('Invalid business field: ' + key);
+      fields[key] = req.body[key];
+    }
+    res.json(await BusinessProfile.findByIdAndUpdate('business', {$set: fields, $unset: unset}, {upsert: true, new: true, runValidators: true}));
+  });
+  app.post('/api/invoices/:id/payments', async (req, res) => {
+    const result = await transaction(async session => {
+      const invoice = await Invoice.findOne({id: req.params.id}).session(session);
+      if (!invoice) throw fail('Invoice not found.', 404);
+      const { id, amount, date, method, reference = '' } = req.body;
+      if (typeof id !== 'string' || !id || id.length > 100 || typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0 || round(amount) !== amount || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || !['Cash','UPI','Bank Transfer'].includes(method) || typeof reference !== 'string' || reference.length > 200) throw fail('Enter a valid payment amount, date, method and reference.');
+      const existing = invoice.payments?.find(p => p.id === id);
+      if (existing) {
+        if (existing.amount !== amount || existing.date !== date || existing.method !== method || existing.reference !== reference.trim()) throw fail('Payment ID already used with different details.', 409);
+        return invoice;
+      }
+      if (invoice.status !== 'Completed') throw fail('Payments require a completed invoice.');
+      if (invoice.receivedAmount === undefined) throw fail('Confirm the historical received total before recording a new payment.');
+      const total = invoice.totals?.grand ?? calculate(invoice).grand;
+      if (round(invoice.receivedAmount + amount) > total) throw fail('Payment exceeds the outstanding balance.');
+      if (reference.trim() && invoice.payments?.some(p => p.reference === reference.trim() && p.method === method)) throw fail('This payment reference is already recorded.', 409);
+      invoice.paymentOpeningReceived ??= invoice.receivedAmount;
+      invoice.payments ??= [];
+      invoice.payments.push({id, amount, date, method, reference: reference.trim()});
+      invoice.receivedAmount = round(invoice.receivedAmount + amount);
+      invoice.revision += 1;
+      await invoice.save({session});
+      return invoice;
+    });
+    res.json(result);
+  });
   const paymentRouter = express.Router();
   paymentRouter.use((_req, res, next) => {
     res.set("Cache-Control", "private, no-store");
@@ -350,6 +389,10 @@ export function createApp() {
                 throw fail("Buyer, product or variant not found.");
             }
             if (path === "invoices") {
+              delete body.payments;
+              delete body.paymentOpeningReceived;
+              if (old?.payments?.length && method === 'delete') throw fail('Invoices with payment history cannot be deleted.');
+              if (old?.payments?.length && body.receivedAmount !== undefined && body.receivedAmount !== old.receivedAmount) throw fail('Use Record Payment to update receipts with payment history.');
               if (old && req.body.revision !== old.revision)
                 throw fail("Invoice changed. Reload it before saving.", 409);
               if (method !== "delete") {
@@ -379,6 +422,7 @@ export function createApp() {
                 }
                 body.revision = (old?.revision || 0) + 1;
                 body.totals = calculate(body);
+                if (old?.payments?.length && body.totals.grand < old.receivedAmount) throw fail('Invoice total cannot be reduced below confirmed receipts.');
                 await new Invoice(body).validate();
               }
               const products = clean(await Product.find().session(session));
