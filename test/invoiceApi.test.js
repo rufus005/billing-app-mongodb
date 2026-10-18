@@ -106,3 +106,21 @@ test('optional exclusive pricing, discounts, charges and rounding persist', asyn
   const invoice = await request('/invoices','POST',{...newInvoice(),number:'EXCLUSIVE',status:'Completed',seller:defaultSeller,receivedAmount:0,pricingMode:'exclusive',autoRoundOff:true,additionalCharges:10.25,items:[{id:'e1',name:'Item',qty:2,price:100,hsn:'123',discountPercent:10,gstPercent:18}]},201);
   assert.equal(invoice.totals.taxable,180); assert.equal(invoice.totals.tax,32.4); assert.equal(invoice.totals.grand,223); assert.equal(invoice.totals.roundOff,0.35);
 });
+
+test('billing address survives buyer and invoice saves, and requests reconnect after disconnection', async () => {
+  const parts = {area: '42 Main Road', pin: '560062', city: 'Bengaluru', state: 'Karnataka'};
+  const address = `${parts.area}\nCity / District: ${parts.city}\nState: ${parts.state}\nPIN Code: ${parts.pin}`;
+  const buyer = await request('/buyers', 'POST', {id:'address-regression',name:'Address Buyer',mobile:'9000000000',address,addressParts:parts,gstin:'',active:true}, 201);
+  const invoice = await request('/invoices', 'POST', {...newInvoice(),number:'ADDRESS-REGRESSION',seller:defaultSeller,buyerId:buyer.id,buyer:{name:buyer.name,mobile:buyer.mobile,gstin:buyer.gstin,address}}, 201);
+  await request('/buyers/'+buyer.id, 'PUT', {...buyer,address:address.replace('42 Main Road','43 Main Road'),addressParts:{...parts,area:'43 Main Road'}});
+  assert.equal((await request('/invoices/'+invoice.id)).buyer.address,address);
+  const previousUri = process.env.MONGO_URI;
+  try {
+    process.env.MONGO_URI = db.getUri();
+    await mongoose.disconnect();
+    const [reloaded, health] = await Promise.all([request('/buyers/'+buyer.id), request('/health')]);
+    assert.equal(reloaded.addressParts.pin, parts.pin);
+    assert.match(reloaded.address,/43 Main Road/);
+    assert.equal(health.database,'connected');
+  } finally { process.env.MONGO_URI = previousUri; }
+});

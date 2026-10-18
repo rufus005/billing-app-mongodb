@@ -64,6 +64,24 @@ async function transaction(fn) {
 }
 export function createApp() {
   const app = express();
+  let initialized = false;
+  let databaseReady;
+  const ensureDatabase = () => {
+    if (mongoose.connection.readyState === 1 && initialized) return Promise.resolve(true);
+    if (databaseReady) return databaseReady;
+    databaseReady = (async () => {
+      if (!(await connectDB())) return false;
+      if (!initialized) {
+        await initialize();
+        initialized = true;
+      }
+      return true;
+    })().catch((error) => {
+      console.error("Database initialization failed", { name: error.name, code: error.code });
+      return false;
+    }).finally(() => { databaseReady = undefined; });
+    return databaseReady;
+  };
   const configuredOrigins = (process.env.CLIENT_URL || "http://localhost:5173,http://localhost:5174")
     .split(",")
     .map((origin) => origin.trim().replace(/\/+$/, ""))
@@ -94,15 +112,12 @@ export function createApp() {
   app.get("/", (_req, res) =>
     res.json({ name: "Billing API", server: "ok", health: "/api/health" }),
   );
-  app.get("/api/health", (_req, res) =>
-    res
-      .status(mongoose.connection.readyState === 1 ? 200 : 503)
-      .json({
-        server: "ok",
-        database:
-          mongoose.connection.readyState === 1 ? "connected" : "disconnected",
-      }),
-  );
+  app.get("/api/health", async (_req, res) => {
+    const connected = await ensureDatabase();
+    res.set("Cache-Control", "no-store").status(connected ? 200 : 503).json({
+      server: "ok", database: connected ? "connected" : "disconnected",
+    });
+  });
   app.post("/api/auth/login", (req, res) => {
     if (
       !process.env.ADMIN_USERNAME ||
@@ -128,8 +143,8 @@ export function createApp() {
   app.get("/api/auth/me", (_req, res) =>
     res.json({ username: process.env.ADMIN_USERNAME }),
   );
-  app.use("/api", (_req, res, next) =>
-    mongoose.connection.readyState === 1
+  app.use("/api", async (_req, res, next) =>
+    await ensureDatabase()
       ? next()
       : res
           .status(503)
@@ -486,5 +501,4 @@ export function createApp() {
   return app;
 }
 
-if (await connectDB()) await initialize();
 export default createApp();
