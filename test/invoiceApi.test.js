@@ -32,6 +32,35 @@ async function request(path, method = "GET", data, status = 200) {
   assert.equal(res.status, status, JSON.stringify(body));
   return body;
 }
+test("invoice list ignores empty optional filters and applies non-empty status filters", async () => {
+  const draft = await request("/invoices", "POST", {
+    ...newInvoice(),
+    id: "empty-filter-draft",
+    number: "EMPTY-FILTER-DRAFT",
+    status: "Draft",
+    date: "2026-10-01",
+  }, 201);
+  const cancelled = await request("/invoices", "POST", {
+    ...newInvoice(),
+    id: "empty-filter-cancelled",
+    number: "EMPTY-FILTER-CANCELLED",
+    status: "Cancelled",
+    date: "2026-10-02",
+  }, 201);
+
+  const all = await request("/invoices");
+  const withEmptyFilters = await request("/invoices?search=&status=&from=&to=");
+  assert.equal(withEmptyFilters.length, all.length);
+  assert.ok(withEmptyFilters.some((invoice) => invoice.id === draft.id));
+  assert.ok(withEmptyFilters.some((invoice) => invoice.id === cancelled.id));
+
+  const drafts = await request("/invoices?status=Draft&from=&to=");
+  assert.ok(drafts.some((invoice) => invoice.id === draft.id));
+  assert.ok(drafts.every((invoice) => invoice.status === "Draft"));
+  const searched = await request("/invoices?search=EMPTY-FILTER-CANCELLED");
+  assert.deepEqual(searched.map((invoice) => invoice.id), [cancelled.id]);
+});
+
 test("confirmed receipt totals persist, edits replace totals, retries cannot double debit, and legacy invoices survive", async () => {
   let saved = await request("/invoices", "POST", {
     ...newInvoice(), number: "PAY-18000", receivedAmount: 5000,

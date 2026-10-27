@@ -43,6 +43,7 @@ const literal = (v) => ({
   $regex: String(v).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
   $options: "i",
 });
+const queryText = (value) => (typeof value === "string" ? value.trim() : "");
 export async function initialize() {
   for (const m of [Product, Buyer, BuyerPrice, Invoice, Lock, BusinessPayment])
     await m.init();
@@ -308,23 +309,32 @@ export function createApp() {
           ["buyer", "buyer.name"],
           ["mobile", "buyer.mobile"],
           ["invoiceNumber", "number"],
-        ])
-          if (req.query[arg]) q[key] = literal(req.query[arg]);
-        if (req.query.search)
+        ]) {
+          const value = queryText(req.query[arg]);
+          if (value) q[key] = literal(value);
+        }
+        const search = queryText(req.query.search);
+        const status = queryText(req.query.status);
+        const from = queryText(req.query.from);
+        const to = queryText(req.query.to);
+        if (search)
           q.$or = ["number", "buyer.name", "buyer.mobile"].map((k) => ({
-            [k]: literal(req.query.search),
+            [k]: literal(search),
           }));
-        if (req.query.from || req.query.to) {
+        if (status) q.status = status;
+        if (from || to) {
           q.date = {};
           for (const [key, op] of [
             ["from", "$gte"],
             ["to", "$lte"],
-          ])
-            if (req.query[key]) {
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(req.query[key]))
+          ]) {
+            const value = key === "from" ? from : to;
+            if (value) {
+              if (!/^\d{4}-\d{2}-\d{2}$/.test(value))
                 throw fail("Invalid date filter.");
-              q.date[op] = req.query[key];
+              q.date[op] = value;
             }
+          }
         }
       }
       res.json(await Model.find(q).sort({ createdAt: -1 }));
