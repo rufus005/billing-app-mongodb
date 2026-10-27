@@ -47,6 +47,30 @@ const queryText = (value) => (typeof value === "string" ? value.trim() : "");
 export async function initialize() {
   for (const m of [Product, Buyer, BuyerPrice, Invoice, Lock, BusinessPayment])
     await m.init();
+  const chargeMigration = "migration:invoice-additional-charges-v1";
+  if (!(await Lock.exists({ _id: chargeMigration }))) {
+    await Invoice.updateMany(
+      { additionalCharges: { $type: "number" } },
+      [
+        {
+          $set: {
+            additionalCharges: [
+              {
+                name: "Additional Charges",
+                amount: "$additionalCharges",
+                taxable: false,
+              },
+            ],
+          },
+        },
+      ],
+    );
+    await Lock.updateOne(
+      { _id: chargeMigration },
+      { $setOnInsert: { revision: 1 } },
+      { upsert: true },
+    );
+  }
   await Lock.updateOne(
     { _id: "business" },
     { $setOnInsert: { revision: 0 } },
@@ -161,6 +185,8 @@ export function createApp() {
     const result = await transaction(async session => {
       const invoice = await Invoice.findOne({id: req.params.id}).session(session);
       if (!invoice) throw fail('Invoice not found.', 404);
+      if (invoice.documentType === "quotation")
+        throw fail("Quotations cannot record invoice payments.");
       const { id, amount, date, method, reference = '' } = req.body;
       if (typeof id !== 'string' || !id || id.length > 100 || typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0 || round(amount) !== amount || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || !['Cash','UPI','Bank Transfer'].includes(method) || typeof reference !== 'string' || reference.length > 200) throw fail('Enter a valid payment amount, date, method and reference.');
       const existing = invoice.payments?.find(p => p.id === id);
@@ -182,6 +208,60 @@ export function createApp() {
       return invoice;
     });
     res.json(result);
+  });
+  app.post("/api/invoices/:id/convert", async (req, res) => {
+    const converted = await transaction(async (session) => {
+      const quotation = await Invoice.findOne({ id: req.params.id }).session(
+        session,
+      );
+      if (!quotation) throw fail("Quotation not found.", 404);
+      if (quotation.documentType !== "quotation")
+        throw fail("Only quotations can be converted to invoices.");
+      if (quotation.quotationStatus === "Converted to Invoice")
+        throw fail("This quotation has already been converted.", 409);
+      if (Number(req.body.revision) !== quotation.revision)
+        throw fail("Quotation changed. Reload it before converting.", 409);
+
+      const body = {
+        ...quotation.toObject(),
+        id: req.body.id || randomUUID(),
+        number: req.body.number,
+        documentType: "invoice",
+        quotationStatus: undefined,
+        convertedInvoiceId: undefined,
+        status: "Draft",
+        receivedAmount: 0,
+        payments: undefined,
+        paymentOpeningReceived: undefined,
+        revision: 1,
+      };
+      delete body._id;
+      delete body.createdAt;
+      delete body.updatedAt;
+      if (typeof body.number !== "string" || !body.number.trim())
+        throw fail("Invoice number is required.");
+      if (typeof body.additionalCharges === "number") {
+        body.additionalCharges = body.additionalCharges
+          ? [{ name: "Additional Charges", amount: body.additionalCharges }]
+          : [];
+      }
+      if (!Array.isArray(body.additionalCharges))
+        throw fail("Invalid additional charges.");
+      body.additionalCharges = body.additionalCharges.map((charge) => ({
+        ...charge,
+        taxable: charge.taxable === true,
+      }));
+      body.totals = calculate(body);
+      const invoice = new Invoice(body);
+      await invoice.validate();
+      const created = (await Invoice.create([invoice], { session }))[0];
+      quotation.quotationStatus = "Converted to Invoice";
+      quotation.convertedInvoiceId = created.id;
+      quotation.revision += 1;
+      await quotation.save({ session });
+      return created;
+    });
+    res.status(201).json(converted);
   });
   const paymentRouter = express.Router();
   paymentRouter.use((_req, res, next) => {
@@ -225,6 +305,23 @@ export function createApp() {
       validateProducts(products);
       const invoices = sales.map((i) => ({
         ...i,
+        documentType: i.documentType || "invoice",
+        quotationStatus:
+          i.documentType === "quotation"
+            ? i.quotationStatus || "Draft"
+            : undefined,
+        additionalCharges:
+          typeof i.additionalCharges === "number"
+            ? i.additionalCharges
+              ? [
+                  {
+                    name: "Additional Charges",
+                    amount: i.additionalCharges,
+                    taxable: false,
+                  },
+                ]
+              : []
+            : i.additionalCharges || [],
         revision: i.revision || 1,
         status: i.status || "Draft",
         items: i.items.map((r) => ({
@@ -235,6 +332,8 @@ export function createApp() {
         })),
       }));
       for (const i of invoices) {
+        if (i.documentType === "quotation" && i.status !== "Draft")
+          throw fail("Imported quotations must have Draft invoice status.");
         i.totals = calculate(i);
         for (const r of i.items)
           if (i.status === "Completed" && r.productId) {
@@ -415,6 +514,63 @@ export function createApp() {
               if (old && req.body.revision !== old.revision)
                 throw fail("Invoice changed. Reload it before saving.", 409);
               if (method !== "delete") {
+                body.documentType ??= old?.documentType || "invoice";
+                body.additionalCharges ??= [];
+                if (!["invoice", "quotation"].includes(body.documentType))
+                  throw fail("Invalid document type.");
+                if (
+                  old &&
+                  (old.documentType || "invoice") !== body.documentType
+                )
+                  throw fail("Use Convert Quotation to Invoice to change document type.");
+                if (body.documentType === "quotation") {
+                  if (body.status !== "Draft")
+                    throw fail("Quotations must remain drafts until converted.");
+                  body.quotationStatus ??= "Draft";
+                  if (
+                    !["Draft", "Sent", "Accepted", "Converted to Invoice"].includes(
+                      body.quotationStatus,
+                    )
+                  )
+                    throw fail("Invalid quotation status.");
+                  if (
+                    body.quotationStatus === "Converted to Invoice" &&
+                    old?.quotationStatus !== "Converted to Invoice"
+                  )
+                    throw fail("Use Convert to Invoice to complete quotation conversion.");
+                } else {
+                  delete body.quotationStatus;
+                  delete body.convertedInvoiceId;
+                }
+                if (typeof body.additionalCharges === "number") {
+                  if (!Number.isFinite(body.additionalCharges) || body.additionalCharges < 0)
+                    throw fail("Invalid additional charges.");
+                  body.additionalCharges = body.additionalCharges
+                    ? [{ name: "Additional Charges", amount: body.additionalCharges }]
+                    : [];
+                }
+                if (
+                  !Array.isArray(body.additionalCharges) ||
+                  body.additionalCharges.some(
+                    (charge) =>
+                      !charge ||
+                      typeof charge.name !== "string" ||
+                      !charge.name.trim() ||
+                      charge.name.trim().length > 100 ||
+                      typeof charge.amount !== "number" ||
+                      !Number.isFinite(charge.amount) ||
+                      charge.amount < 0 ||
+                      charge.amount > 1e9 ||
+                      (charge.taxable !== undefined &&
+                        typeof charge.taxable !== "boolean"),
+                  )
+                )
+                  throw fail("Enter a name and non-negative amount for each custom charge.");
+                body.additionalCharges = body.additionalCharges.map((charge) => ({
+                  name: charge.name.trim(),
+                  amount: charge.amount,
+                  taxable: charge.taxable === true,
+                }));
                 body.items = (body.items || []).map((r) => ({
                   ...r,
                   finalPrice: r.finalPrice ?? r.price,
@@ -448,7 +604,9 @@ export function createApp() {
               const next = updateCompletedSale(
                 products,
                 clean(old),
-                method === "delete" ? undefined : body,
+                method === "delete" || body.documentType === "quotation"
+                  ? undefined
+                  : body,
                 defaultSettings,
               );
               for (let n = 0; n < next.length; n++)

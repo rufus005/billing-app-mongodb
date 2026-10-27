@@ -29,10 +29,12 @@ export const defaultSettings = {
   sgstRate: 9,
 };
 
-export function newInvoice(settings = defaultSettings) {
+export function newInvoice(settings = defaultSettings, documentType = "invoice") {
   const d = new Date();
   return {
     id: randomUUID(),
+    documentType,
+    quotationStatus: documentType === "quotation" ? "Draft" : undefined,
     status: "Draft",
     createdAt: d.toISOString(),
     updatedAt: d.toISOString(),
@@ -40,7 +42,7 @@ export function newInvoice(settings = defaultSettings) {
     declaration: settings.declaration,
     cgstRate: settings.gstEnabled ? settings.cgstRate : 0,
     sgstRate: settings.gstEnabled ? settings.sgstRate : 0,
-    number: `INV-${d.getFullYear()}-${String(d.getTime()).slice(-6)}`,
+    number: `${documentType === "quotation" ? "QTN" : "INV"}-${d.getFullYear()}-${String(d.getTime()).slice(-6)}`,
     date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
     time: d.toTimeString().slice(0, 8),
     mode: settings.defaultMode,

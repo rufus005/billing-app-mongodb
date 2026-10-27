@@ -133,6 +133,20 @@ const item = new Schema(
   },
   { _id: false },
 );
+const additionalCharge = new Schema(
+  {
+    name: { type: String, required: true, trim: true, maxlength: 100 },
+    amount: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 1e9,
+      validate: Number.isFinite,
+    },
+    taxable: { type: Boolean, default: false },
+  },
+  { _id: false },
+);
 const invoiceSchema = new Schema(
     {
       ...base,
@@ -142,7 +156,17 @@ const invoiceSchema = new Schema(
       shipTo: buyer,
       dueDate: String,
       pricingMode: { type: String, enum: ["inclusive", "exclusive"] },
-      additionalCharges: { type: Number, min: 0, validate: Number.isFinite },
+      additionalCharges: { type: [additionalCharge], default: [] },
+      documentType: {
+        type: String,
+        enum: ["invoice", "quotation"],
+        default: "invoice",
+      },
+      quotationStatus: {
+        type: String,
+        enum: ["Draft", "Sent", "Accepted", "Converted to Invoice"],
+      },
+      convertedInvoiceId: String,
       autoRoundOff: Boolean,
       taxMode: { type: String, enum: ["gst", "non-gst"] },
       taxJurisdiction: { type: String, enum: ["intra", "inter"] },

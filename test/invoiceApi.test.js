@@ -8,7 +8,7 @@ process.env.ADMIN_PASSWORD = "invoice-test-password";
 process.env.JWT_SECRET = "invoice-test-secret";
 process.env.MONGOMS_DOWNLOAD_DIR = "/tmp/billing-test-mongodb";
 const { createApp, initialize } = await import("../app.js");
-const { Invoice } = await import("../models/index.js");
+const { Invoice, Lock } = await import("../models/index.js");
 const { newInvoice, defaultSeller } = await import("../utils/invoiceTypes.js");
 let db, server, base, token;
 before(async () => {
@@ -78,6 +78,130 @@ test("invoice list returns 500 and logs the internal error when MongoDB query fa
     find.mock.restore();
     log.mock.restore();
   }
+});
+
+test("custom charges persist and taxable charges contribute GST", async () => {
+  const invoice = await request(
+    "/invoices",
+    "POST",
+    {
+      ...newInvoice(),
+      number: "CUSTOM-CHARGES",
+      additionalCharges: [
+        { name: "Delivery", amount: 118, taxable: true },
+        { name: "Packaging", amount: 20 },
+      ],
+      items: [
+        { id: "charge-item", name: "Item", hsn: "", qty: 1, price: 118 },
+      ],
+    },
+    201,
+  );
+  assert.deepEqual(invoice.additionalCharges, [
+    { name: "Delivery", amount: 118, taxable: true },
+    { name: "Packaging", amount: 20, taxable: false },
+  ]);
+  assert.equal(invoice.totals.sale, 256);
+  assert.equal(invoice.totals.net, 256);
+  assert.equal(invoice.totals.taxable, 200);
+  assert.equal(invoice.totals.tax, 36);
+  assert.equal(invoice.totals.grand, 256);
+  await request(
+    "/invoices",
+    "POST",
+    {
+      ...newInvoice(),
+      number: "INVALID-CUSTOM-CHARGE",
+      additionalCharges: [{ name: "", amount: -1 }],
+    },
+    400,
+  );
+});
+
+test("database initialization upgrades legacy numeric additional charges", async () => {
+  const legacy = {
+    ...newInvoice(),
+    id: "legacy-charge-migration",
+    number: "LEGACY-CHARGE-MIGRATION",
+    additionalCharges: 15.5,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+  await Invoice.collection.insertOne(legacy);
+  await Lock.deleteOne({ _id: "migration:invoice-additional-charges-v1" });
+  await initialize();
+  const migrated = await Invoice.findOne({ id: legacy.id }).lean();
+  assert.deepEqual(migrated.additionalCharges, [
+    { name: "Additional Charges", amount: 15.5, taxable: false },
+  ]);
+  assert.equal((await request("/invoices/legacy-charge-migration")).number, legacy.number);
+});
+
+test("quotation documents save without stock effects and convert once to an invoice", async () => {
+  const product = {
+    id: "quotation-product",
+    name: "Quotation product",
+    code: "quote",
+    barcode: "",
+    hsn: "",
+    category: "",
+    price: 100,
+    stock: 5,
+    variants: [],
+  };
+  await request("/products", "POST", product, 201);
+  const quotation = await request(
+    "/invoices",
+    "POST",
+    {
+      ...newInvoice(),
+      id: "quotation-conversion",
+      number: "QTN-0001",
+      documentType: "quotation",
+      quotationStatus: "Accepted",
+      items: [
+        {
+          id: "quotation-line",
+          productId: product.id,
+          name: product.name,
+          hsn: "",
+          qty: 2,
+          price: 100,
+        },
+      ],
+    },
+    201,
+  );
+  assert.equal(quotation.documentType, "quotation");
+  assert.equal(quotation.quotationStatus, "Accepted");
+  assert.equal((await request("/products/quotation-product")).stock, 5);
+  await request(
+    `/invoices/${quotation.id}/payments`,
+    "POST",
+    { id: "quote-payment", amount: 1 },
+    400,
+  );
+
+  const converted = await request(
+    `/invoices/${quotation.id}/convert`,
+    "POST",
+    {
+      ...quotation,
+      id: "converted-invoice",
+      number: "INV-0001",
+    },
+    201,
+  );
+  assert.equal(converted.documentType, "invoice");
+  assert.equal(converted.status, "Draft");
+  assert.equal(converted.quotationStatus, undefined);
+  assert.equal((await request(`/invoices/${quotation.id}`)).quotationStatus, "Converted to Invoice");
+  assert.equal((await request("/products/quotation-product")).stock, 5);
+  await request(`/invoices/${quotation.id}/convert`, "POST", {
+    ...quotation,
+    id: "second-converted-invoice",
+    number: "INV-0002",
+  }, 409);
 });
 
 test("confirmed receipt totals persist, edits replace totals, retries cannot double debit, and legacy invoices survive", async () => {
