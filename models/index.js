@@ -133,9 +133,7 @@ const item = new Schema(
   },
   { _id: false },
 );
-export const Invoice = mongoose.model(
-  "Invoice",
-  new Schema(
+const invoiceSchema = new Schema(
     {
       ...base,
       number: { ...required, unique: true },
@@ -174,8 +172,9 @@ export const Invoice = mongoose.model(
       totals: Schema.Types.Mixed,
     },
     options,
-  ),
-);
+  );
+invoiceSchema.index({ createdAt: -1 });
+export const Invoice = mongoose.model("Invoice", invoiceSchema);
 export const Lock = mongoose.model(
   "WriteLock",
   new Schema({ _id: String, revision: Number }),

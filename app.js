@@ -329,7 +329,7 @@ export function createApp() {
           }
         }
       }
-      res.json(await Model.find(q).sort({ createdAt: -1 }));
+      res.json(await Model.find(q).sort({ createdAt: -1 }).allowDiskUse(true));
     });
     app.get("/api/" + path + "/:id", async (req, res) => {
       const d = await Model.findOne({ id: req.params.id });
