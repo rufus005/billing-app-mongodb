@@ -71,16 +71,13 @@ export function createApp() {
     if (mongoose.connection.readyState === 1 && initialized) return Promise.resolve(true);
     if (databaseReady) return databaseReady;
     databaseReady = (async () => {
-      if (!(await connectDB())) return false;
+      await connectDB();
       if (!initialized) {
         await initialize();
         initialized = true;
       }
       return true;
-    })().catch((error) => {
-      console.error("Database initialization failed", { name: error.name, code: error.code });
-      return false;
-    }).finally(() => { databaseReady = undefined; });
+    })().finally(() => { databaseReady = undefined; });
     return databaseReady;
   };
   const configuredOrigins = (process.env.CLIENT_URL || "http://localhost:5173,http://localhost:5174")
@@ -114,9 +111,9 @@ export function createApp() {
     res.json({ name: "Billing API", server: "ok", health: "/api/health" }),
   );
   app.get("/api/health", async (_req, res) => {
-    const connected = await ensureDatabase();
-    res.set("Cache-Control", "no-store").status(connected ? 200 : 503).json({
-      server: "ok", database: connected ? "connected" : "disconnected",
+    await ensureDatabase();
+    res.set("Cache-Control", "no-store").json({
+      server: "ok", database: "connected",
     });
   });
   app.post("/api/auth/login", (req, res) => {
@@ -144,15 +141,10 @@ export function createApp() {
   app.get("/api/auth/me", (_req, res) =>
     res.json({ username: process.env.ADMIN_USERNAME }),
   );
-  app.use("/api", async (_req, res, next) =>
-    await ensureDatabase()
-      ? next()
-      : res
-          .status(503)
-          .json({
-            message: "MongoDB unavailable. Your local data has been preserved.",
-          }),
-  );
+  app.use("/api", async (_req, _res, next) => {
+    await ensureDatabase();
+    next();
+  });
   app.get('/api/business-profile', async (_req, res) => res.json(await BusinessProfile.findById('business')));
   app.put('/api/business-profile', async (req, res) => {
     const fields = {};
@@ -494,19 +486,17 @@ export function createApp() {
   }
   app.use((err, _req, res, _next) => {
     const duplicate = err.code === 11000;
-    res
-      .status(duplicate ? 409 : err.status || 400)
-      .json({
-        message: duplicate
-          ? "Duplicate record: invoice number, ID or buyer/product/variant price already exists."
-          : err.name === "ValidationError"
-            ? "Invalid record. Check required fields and non-negative prices."
-            : err.status ||
-                err.message?.includes("stock") ||
-                err.message?.includes("Stock")
-              ? err.message
-              : "Request failed. Check the submitted data and database connection.",
-      });
+    const validation = err.name === "ValidationError";
+    const status = duplicate ? 409 : validation ? 400 : err.status || 500;
+    if (!duplicate && !validation && !err.status)
+      console.error("Unhandled API error", err);
+    res.status(status).json({
+      message: duplicate
+        ? "Duplicate record: invoice number, ID or buyer/product/variant price already exists."
+        : validation
+          ? "Invalid record. Check required fields and non-negative prices."
+          : err.message || "Internal server error.",
+    });
   });
   return app;
 }

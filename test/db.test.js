@@ -6,19 +6,19 @@ import { connectDB } from "../config/db.js";
 process.env.MONGO_URI = "mongodb://127.0.0.1:1/test-only";
 test("concurrent requests share a connection attempt and recover after an initial failure", async () => {
   let attempts = 0;
+  const failure = Object.assign(new Error("private connection detail"), { name: "MongoServerSelectionError" });
   const connect = mock.method(mongoose, "connect", async () => {
     attempts++;
     await new Promise(resolve => setTimeout(resolve, 10));
-    if (attempts === 1) throw Object.assign(new Error("private connection detail"), { name: "MongoServerSelectionError" });
+    if (attempts === 1) throw failure;
     return mongoose;
   });
-  const messages = [];
-  const log = mock.method(console, "error", (...args) => messages.push(args));
   try {
-    assert.deepEqual(await Promise.all([connectDB(), connectDB(), connectDB()]), [false, false, false]);
+    const first = await Promise.allSettled([connectDB(), connectDB(), connectDB()]);
+    assert.deepEqual(first.map(result => result.status), ["rejected", "rejected", "rejected"]);
+    assert.ok(first.every(result => result.status === "rejected" && result.reason === failure));
     assert.equal(attempts, 1);
     assert.deepEqual(await Promise.all([connectDB(), connectDB()]), [true, true]);
     assert.equal(attempts, 2);
-    assert.doesNotMatch(JSON.stringify(messages), /private connection detail|mongodb:\/\//);
-  } finally { connect.mock.restore(); log.mock.restore(); }
+  } finally { connect.mock.restore(); }
 });

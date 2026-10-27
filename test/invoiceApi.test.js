@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { before, after, test } from "node:test";
+import { before, after, test, mock } from "node:test";
 import mongoose from "mongoose";
 import { MongoMemoryReplSet } from "mongodb-memory-server-core";
 process.env.MONGO_URI = "";
@@ -59,6 +59,25 @@ test("invoice list ignores empty optional filters and applies non-empty status f
   assert.ok(drafts.every((invoice) => invoice.status === "Draft"));
   const searched = await request("/invoices?search=EMPTY-FILTER-CANCELLED");
   assert.deepEqual(searched.map((invoice) => invoice.id), [cancelled.id]);
+});
+
+test("invoice list returns 500 and logs the internal error when MongoDB query fails", async () => {
+  const error = new Error("invoice query failed");
+  const find = mock.method(Invoice, "find", () => {
+    throw error;
+  });
+  const logged = [];
+  const log = mock.method(console, "error", (...args) => logged.push(args));
+  try {
+    const body = await request("/invoices", "GET", undefined, 500);
+    assert.deepEqual(body, { message: error.message });
+    assert.ok(logged.some(([message, details]) =>
+      message === "Unhandled API error" && details === error,
+    ));
+  } finally {
+    find.mock.restore();
+    log.mock.restore();
+  }
 });
 
 test("confirmed receipt totals persist, edits replace totals, retries cannot double debit, and legacy invoices survive", async () => {
